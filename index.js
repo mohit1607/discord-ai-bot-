@@ -1,11 +1,7 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits } = require('discord.js');
-const Groq = require('groq-sdk') // Use `import` only if using ES Modules or transpiler, else use require
-
-// If you can't use ES modules, do this instead:
-// const Groq = require('groq-sdk').default;
-
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const Groq = require('groq-sdk');
+// const Filter = require('bad-words');
 
 const client = new Client({
     intents: [
@@ -15,32 +11,53 @@ const client = new Client({
     ],
 });
 
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// const filter = new Filter();
+const sessions = new Map(); // For storing conversation history per user
+
 client.once('ready', () => {
-    console.log(`Logged in as ${client.user.tag}`);
+    console.log(`✅ Logged in as ${client.user.tag}`);
 });
 
-async function getGroqChatCompletion(userMessage) {
+// Function to get Groq response with conversation context
+async function getGroqChatCompletion(userId, userMessage) {
     try {
+        let history = sessions.get(userId) || [
+            {
+                role: 'system',
+                content: 'You are a helpful assistant that answers questions politely and clearly.',
+            }
+        ];
+
+        // Append the new message
+        history.push({
+            role: 'user',
+            content: userMessage,
+        });
+
         const chatCompletion = await groq.chat.completions.create({
             model: 'llama-3.3-70b-versatile',
-            messages: [
-                {
-                    role: 'system',
-                    content: 'You are a helpful assistant that answers questions politely and clearly.'
-                },
-                {
-                    role: 'user',
-                    content: userMessage,
-                },
-            ],
+            messages: history,
+            max_tokens: 300
         });
-        return chatCompletion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+
+        const aiReply = chatCompletion.choices[0]?.message?.content || "Sorry, I couldn't generate a response.";
+
+        // Add assistant reply to history
+        history.push({
+            role: 'assistant',
+            content: aiReply,
+        });
+
+        // Save the latest 10 exchanges to prevent memory bloat
+        sessions.set(userId, history.slice(-10));
+
+        return aiReply;
     } catch (error) {
-        console.error('Groq API error:', error);
+        console.error('❌ Groq API error:', error);
         return "Oops, something went wrong when contacting the AI.";
     }
 }
-
 
 client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
@@ -49,12 +66,16 @@ client.on('messageCreate', async (message) => {
         const withoutMention = message.content.replace(/<@!?(\d+)>/g, '').trim();
 
         if (withoutMention.length === 0) {
-            message.channel.send(`Hey ${message.author}, how can I help you?`);
-        } else {
-            // Call the Groq API with the user message and reply with AI response
-            const aiResponse = await getGroqChatCompletion(withoutMention);
-            message.channel.send(aiResponse);
+            return message.channel.send(`Hey ${message.author}, how can I help you?`);
         }
+
+        // Check for profanity
+        // if (filter.isProfane(withoutMention)) {
+        //     return message.reply("🚫 Let's keep the conversation respectful, please.");
+        // }
+
+        const response = await getGroqChatCompletion(message.author.id, withoutMention);
+        return message.channel.send(response);
     }
 });
 
